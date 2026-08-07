@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "api/telegram.py", "use": "@vercel/python" },
+    { "src": "api/alice.py", "use": "@vercel/python" }
+  ]
+}
