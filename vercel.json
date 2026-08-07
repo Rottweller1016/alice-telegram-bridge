@@ -3,5 +3,9 @@
   "builds": [
     { "src": "api/telegram.py", "use": "@vercel/python" },
     { "src": "api/alice.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/telegram", "dest": "api/telegram.py" },
+    { "src": "/api/alice", "dest": "api/alice.py" }
   ]
 }
