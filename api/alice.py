@@ -4,6 +4,7 @@ import json
 import re
 import urllib.request
 import urllib.error
+import urllib.parse
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -61,6 +62,21 @@ class handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         body = json.loads(raw)
 
+        try:
+            reply = self.build_response(body)
+        except Exception:
+            reply = {
+                "version": body.get("version", "1.0"),
+                "session": body.get("session", {}),
+                "response": {"text": "Что-то пошло не так, попробуй ещё раз.", "end_session": False},
+            }
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(reply).encode())
+
+    def build_response(self, body):
         utterance = body.get("request", {}).get("original_utterance", "").strip()
         app_id = body.get("session", {}).get("application", {}).get("application_id")
 
@@ -79,7 +95,7 @@ class handler(BaseHTTPRequestHandler):
                     rows = supabase_request(
                         "GET", f"/bindings?alice_user_id=eq.{app_id}&confirmed=eq.true"
                     )
-                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                except Exception:
                     reply = build_reply(
                         body, "Не получилось связаться с сервисом привязки, попробуй чуть позже."
                     )
@@ -96,7 +112,7 @@ class handler(BaseHTTPRequestHandler):
                                 f"/bindings?alice_user_id=eq.{app_id}",
                                 {"owner_name": new_name},
                             )
-                        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                        except Exception:
                             reply = build_reply(body, "Не получилось сохранить имя, попробуй чуть позже.")
                         else:
                             reply = build_reply(
@@ -111,14 +127,15 @@ class handler(BaseHTTPRequestHandler):
                 try:
                     if recipient:
                         stem = name_stem(recipient)
+                        quoted_stem = urllib.parse.quote(stem)
                         rows = supabase_request(
-                            "GET", f"/bindings?owner_name=ilike.*{stem}*&confirmed=eq.true"
+                            "GET", f"/bindings?owner_name=ilike.*{quoted_stem}*&confirmed=eq.true"
                         )
                     else:
                         rows = supabase_request(
                             "GET", f"/bindings?alice_user_id=eq.{app_id}&confirmed=eq.true"
                         )
-                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                except Exception:
                     reply = build_reply(
                         body, "Не получилось связаться с сервисом привязки, попробуй чуть позже."
                     )
@@ -140,7 +157,7 @@ class handler(BaseHTTPRequestHandler):
                         prefix = "📝 Заметка от Алисы" if not recipient else "📝 Заметка от Алисы (общий доступ)"
                         try:
                             send_telegram_message(chat_id, f"{prefix}:\n{note_text}")
-                        except (urllib.error.URLError, TimeoutError):
+                        except Exception:
                             reply = build_reply(
                                 body, "Не получилось отправить заметку в Telegram, попробуй ещё раз."
                             )
@@ -153,7 +170,7 @@ class handler(BaseHTTPRequestHandler):
                     code = code_match.group(1)
                     try:
                         rows = supabase_request("GET", f"/bindings?code=eq.{code}")
-                    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                    except Exception:
                         reply = build_reply(
                             body, "Не получилось связаться с сервисом привязки, попробуй чуть позже."
                         )
@@ -169,7 +186,7 @@ class handler(BaseHTTPRequestHandler):
                                     f"/bindings?code=eq.{code}",
                                     {"alice_user_id": app_id, "confirmed": True},
                                 )
-                            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                            except Exception:
                                 reply = build_reply(
                                     body, "Не получилось сохранить привязку, попробуй чуть позже."
                                 )
@@ -185,7 +202,4 @@ class handler(BaseHTTPRequestHandler):
                     "«меня зовут Вася», или назови код привязки.",
                 )
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(reply).encode())
+        return reply
