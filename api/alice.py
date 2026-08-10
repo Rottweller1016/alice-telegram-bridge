@@ -10,10 +10,20 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 CODE_RE = re.compile(r"(?:код\s*)?\b(\d{6})\b", re.IGNORECASE)
+NAME_SET_RE = re.compile(r"меня зовут\s+([А-Яа-яЁё\-]+)", re.IGNORECASE)
 NOTE_TRIGGER_RE = re.compile(
-    r"(?:заметк\w*|запиши|сохрани|напомни)\w*\s+(?:мне\s+)?(?:о\s+|про\s+|что\s+)?(.+)",
+    r"(?:заметк\w*|запиши|сохрани|напомни)\w*\s+(?:мне\s+)?"
+    r"(?:для\s+(?P<recipient>[А-Яа-яЁё\-]+)\s*[:,]?\s*)?"
+    r"(?:о\s+|про\s+|что\s+)?(?P<text>.+)",
     re.IGNORECASE,
 )
+
+
+def name_stem(name):
+    # Грубое усечение окончания для нечёткого поиска по склонениям
+    # («Вася» / «Васи» / «Васе» → «вас»)
+    name = name.lower()
+    return name[:-2] if len(name) > 5 else (name[:-1] if len(name) > 3 else name)
 
 
 def supabase_request(method, path, body=None):
@@ -60,12 +70,11 @@ class handler(BaseHTTPRequestHandler):
             # На случай системных запросов от Яндекса без application_id
             reply = build_reply(body, "Не удалось определить устройство.")
         else:
-            note_match = NOTE_TRIGGER_RE.search(utterance)
+            name_match = NAME_SET_RE.search(utterance)
+            note_match = None if name_match else NOTE_TRIGGER_RE.search(utterance)
 
-            # Заметка проверяется первой, чтобы случайные 6 цифр внутри
-            # текста заметки не перехватывались как код привязки.
-            if note_match:
-                note_text = note_match.group(1).strip()
+            if name_match:
+                new_name = name_match.group(1).strip()
                 try:
                     rows = supabase_request(
                         "GET", f"/bindings?alice_user_id=eq.{app_id}&confirmed=eq.true"
@@ -78,12 +87,59 @@ class handler(BaseHTTPRequestHandler):
                     if not rows:
                         reply = build_reply(
                             body,
-                            "Твой аккаунт ещё не привязан к Telegram. Напиши боту /start и назови мне полученный код.",
+                            "Твой аккаунт ещё не привязан к Telegram. Сначала назови код привязки.",
                         )
                     else:
-                        chat_id = rows[0]["telegram_chat_id"]
                         try:
-                            send_telegram_message(chat_id, f"📝 Заметка от Алисы:\n{note_text}")
+                            supabase_request(
+                                "PATCH",
+                                f"/bindings?alice_user_id=eq.{app_id}",
+                                {"owner_name": new_name},
+                            )
+                        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                            reply = build_reply(body, "Не получилось сохранить имя, попробуй чуть позже.")
+                        else:
+                            reply = build_reply(
+                                body, f"Запомнила, теперь тебе можно отправлять заметки по имени {new_name}."
+                            )
+
+            # Заметка проверяется раньше кода, чтобы случайные 6 цифр внутри
+            # текста заметки не перехватывались как код привязки.
+            if reply is None and note_match:
+                recipient = note_match.group("recipient")
+                note_text = note_match.group("text").strip()
+                try:
+                    if recipient:
+                        stem = name_stem(recipient)
+                        rows = supabase_request(
+                            "GET", f"/bindings?owner_name=ilike.*{stem}*&confirmed=eq.true"
+                        )
+                    else:
+                        rows = supabase_request(
+                            "GET", f"/bindings?alice_user_id=eq.{app_id}&confirmed=eq.true"
+                        )
+                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                    reply = build_reply(
+                        body, "Не получилось связаться с сервисом привязки, попробуй чуть позже."
+                    )
+                else:
+                    if not rows:
+                        if recipient:
+                            reply = build_reply(
+                                body,
+                                f"Не нашла получателя по имени {recipient}. "
+                                "Он должен сам сказать мне «меня зовут ...» после привязки.",
+                            )
+                        else:
+                            reply = build_reply(
+                                body,
+                                "Твой аккаунт ещё не привязан к Telegram. Напиши боту /start и назови мне полученный код.",
+                            )
+                    else:
+                        chat_id = rows[0]["telegram_chat_id"]
+                        prefix = "📝 Заметка от Алисы" if not recipient else "📝 Заметка от Алисы (общий доступ)"
+                        try:
+                            send_telegram_message(chat_id, f"{prefix}:\n{note_text}")
                         except (urllib.error.URLError, TimeoutError):
                             reply = build_reply(
                                 body, "Не получилось отправить заметку в Telegram, попробуй ещё раз."
@@ -125,8 +181,8 @@ class handler(BaseHTTPRequestHandler):
             if reply is None:
                 reply = build_reply(
                     body,
-                    "Скажи, например: «заметка купить молоко», «запиши позвонить маме», "
-                    "или назови код привязки.",
+                    "Скажи, например: «заметка купить молоко», «заметка для Васи купить хлеб», "
+                    "«меня зовут Вася», или назови код привязки.",
                 )
 
         self.send_response(200)
