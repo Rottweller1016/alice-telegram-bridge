@@ -44,47 +44,51 @@ class handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         body = json.loads(raw)
 
-        utterance = body["request"]["original_utterance"].strip()
-        user_id = body["session"]["user"]["user_id"]
+        utterance = body.get("request", {}).get("original_utterance", "").strip()
+        app_id = body.get("session", {}).get("application", {}).get("application_id")
 
         reply = None
 
-        match = re.search(r"код\s*(\d{6})", utterance, re.IGNORECASE)
-        if match:
-            code = match.group(1)
-            rows = supabase_request("GET", f"/bindings?code=eq.{code}&confirmed=eq.false")
-            if not rows:
-                reply = build_reply(body, "Такой код не найден или уже использован.")
-            else:
-                supabase_request(
-                    "PATCH",
-                    f"/bindings?code=eq.{code}",
-                    {"alice_user_id": user_id, "confirmed": True},
-                )
-                reply = build_reply(body, "Готово, аккаунт привязан! Теперь можешь отправлять заметки.")
-
-        if reply is None:
-            match = re.search(r"заметк\w*\s+(?:о|про)?\s*(.+)", utterance, re.IGNORECASE)
+        if not app_id:
+            # На случай системных запросов от Яндекса без application_id
+            reply = build_reply(body, "Не удалось определить устройство.")
+        else:
+            match = re.search(r"код\s*(\d{6})", utterance, re.IGNORECASE)
             if match:
-                note_text = match.group(1).strip()
-                rows = supabase_request(
-                    "GET", f"/bindings?alice_user_id=eq.{user_id}&confirmed=eq.true"
-                )
+                code = match.group(1)
+                rows = supabase_request("GET", f"/bindings?code=eq.{code}&confirmed=eq.false")
                 if not rows:
-                    reply = build_reply(
-                        body,
-                        "Твой аккаунт ещё не привязан к Telegram. Напиши боту /start и назови мне полученный код.",
-                    )
+                    reply = build_reply(body, "Такой код не найден или уже использован.")
                 else:
-                    chat_id = rows[0]["telegram_chat_id"]
-                    send_telegram_message(chat_id, f"📝 Заметка от Алисы:\n{note_text}")
-                    reply = build_reply(body, "Заметка отправлена в Telegram.")
+                    supabase_request(
+                        "PATCH",
+                        f"/bindings?code=eq.{code}",
+                        {"alice_user_id": app_id, "confirmed": True},
+                    )
+                    reply = build_reply(body, "Готово, аккаунт привязан! Теперь можешь отправлять заметки.")
 
-        if reply is None:
-            reply = build_reply(
-                body,
-                "Скажи, например: «отправь заметку о покупке персиков», или назови код привязки.",
-            )
+            if reply is None:
+                match = re.search(r"заметк\w*\s+(?:о|про)?\s*(.+)", utterance, re.IGNORECASE)
+                if match:
+                    note_text = match.group(1).strip()
+                    rows = supabase_request(
+                        "GET", f"/bindings?alice_user_id=eq.{app_id}&confirmed=eq.true"
+                    )
+                    if not rows:
+                        reply = build_reply(
+                            body,
+                            "Твой аккаунт ещё не привязан к Telegram. Напиши боту /start и назови мне полученный код.",
+                        )
+                    else:
+                        chat_id = rows[0]["telegram_chat_id"]
+                        send_telegram_message(chat_id, f"📝 Заметка от Алисы:\n{note_text}")
+                        reply = build_reply(body, "Заметка отправлена в Telegram.")
+
+            if reply is None:
+                reply = build_reply(
+                    body,
+                    "Скажи, например: «отправь заметку о покупке персиков», или назови код привязки.",
+                )
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
